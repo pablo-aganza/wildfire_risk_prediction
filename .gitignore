@@ -1,3 +1,7 @@
+# project specific files/folders
+*/plots/*
+data/*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -25,6 +29,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+.DS_Store
 
 # PyInstaller
 #   Usually these files are written by a python script from a template
