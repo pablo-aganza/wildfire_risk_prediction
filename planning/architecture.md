@@ -188,9 +188,6 @@ flowchart TD
 
 ## Serving Layer
 
-<!-- TODO: brief note on the serving layer approach -->
-<!-- Point to: api/ for implementation -->
-
 ```mermaid
 flowchart LR
     subgraph PIPELINE["Pipeline Service"]
@@ -282,6 +279,17 @@ Retraining will have three triggers:
 - a human-initiated retrain available at any for cases like new data or catching something the automated missed
 
 ---
+
+## One Small Favour
+
+I've been thinking about the labeling strategy and it is the weakest link in the whole plan. I kind of already knew this going in but just wanted to get started with something. ICS-209 coverage stops at 2020, which means there's no ground truth for anything after that (which I had planned for 2023 to be a held out test year), and more importantly no way to do the retroactive outcome labeling I had planned for MLOps once the service is actually live. The whole realized precision loop depends on getting updated truth values over time, and this dataset is a frozen research compilation that does not get updated frequently.
+
+I looked into WFIGS as a replacement since it's more than just perimeters: there's a live layer (refreshed about every 5 min, has discovery date + point of origin) that I've only been thinking of using for perimeters. This would fix the currency problem, but not the actual problem of "got assigned an incident number", which is still a human threshold just a lower one than ICS-209's reporting benchmark. So this is not good either.
+
+So I'm leaning toward dropping the whole binary "became a reportable incident" target and reframing the label as something derived purely from the FIRMS detection history itself (e.g. predicting escalation magnitude based on detection count, total FRP, cluster area at T+24h, T+48h, etc..) instead of a declared incident flag. This would be a self-supervised method based on the FIRMS data, which doesn't have an end date (and has a large and easily accessible history), sidesteps the whole class imbalance problem since it's a continuous target instead of a ~1-5% positive rate, and quashes the ICS-209/WFIGS dependency instead of just swapping in a better matched labeing dataset. ICS-209/WFIGS would probably still be useful as enrichment features, just not as the label source. Still just brainstorming, haven't revisited the train/test split or any of the modeling logic yet.
+
+---
+
 
 ## Some more things to think about but not sure right now
 
