@@ -2,98 +2,24 @@
 
 Some of my current thinking/brain-dump (current as in before actually implementing most of this, so much of this is subject to change) on how the overall system might look like and some reasoning for certain design decisions. Goal of this document isn't to create the final system and architecture plans, but more so just to get the ideas flowing and start to nail down some of the specifics - so if something doesn't seem exactly correct, you're probably right and I haven't given that exact part enough thought yet. Most of this is likely to change once I get out of the EDA phase and get to creating the pipelines. Overall, the goal of this project is to have fun while looking into some things I haven't had direct work experience with and try to create a "production" like prediction service.
 
----
 
+## One Small Favour
+
+A note added after writing this page, talking about an issue and how it is coupled with what is discussed throughout the document:
+
+I've been thinking about the labeling strategy and it is the weakest link in the whole plan. I kind of already knew this going in but just wanted to get started with something. ICS-209 coverage stops at 2020, which means there's no ground truth for anything after that (which I had planned for 2023 to be a held out test year), and more importantly no way to do the retroactive outcome labeling I had planned for MLOps once the service is actually live. The whole realized precision loop depends on getting updated truth values over time, and this dataset is a frozen research compilation that does not get updated frequently.
+
+I looked into WFIGS as a replacement since it's more than just perimeters: there's a live layer (refreshed about every 5 min, has discovery date + point of origin) that I've only been thinking of using for perimeters. This would fix the currency problem, but not the actual problem of "got assigned an incident number", which is still a human threshold just a lower one than ICS-209's reporting benchmark. So this is not good either.
+
+So I'm leaning toward dropping the whole binary "became a reportable incident" target and reframing the label as something derived purely from the FIRMS detection history itself (e.g. predicting escalation magnitude based on detection count, total FRP, cluster area at T+24h, T+48h, etc..) instead of a declared incident flag. This would be a self-supervised method based on the FIRMS data, which doesn't have an end date (and has a large and easily accessible history), sidesteps the whole class imbalance problem since it's a continuous target instead of a ~1-5% positive rate, and quashes the ICS-209/WFIGS dependency instead of just swapping in a better matched labeing dataset. ICS-209/WFIGS would probably still be useful as enrichment features, just not as the label source. Still just brainstorming, haven't revisited the train/test split or any of the modeling logic yet.
 
 ## System Overview
 
 The system at a very wide view, which is for a near-real-time wildfire risk system that ingests satellite hotspot detections from NASA FIRMS, clusters them into fire events using spatiotemoral methods, scores the clustered events with a trained ML risk model, and serves the prediction through a REST API. 
 
-```mermaid
-flowchart LR
-    subgraph EXP_TRACK["Experimentation Track"]
-        direction TB
-        EDA["EDA Notebooks"]
-        MANUAL["Manual Training Run"]
-    end
+~Diagram coming soon~
 
-    subgraph SOURCES["External Data Sources"]
-        FIRMS_NRT["FIRMS API"]
-        FIRMS_ARC["FIRMS Archive"]
-        WFIGS_SRC["WFIGS API"]
-        ICS_SRC["ICS-209-PLUS"]
-        HRRR_SRC["HRRR Weather"]
-    end
 
-    subgraph PIPELINE["Automated Pipeline — Dagster"]
-        direction TB
-        ETL["ETL / Validation"]
-        PROC["Preprocess -> Cluster -> Aggregate -> Enrich -> Feature Engineer -> Label"]
-        MODEL["Risk Model"]
-    end
-
-    subgraph PG["Postgres + PostGIS"]
-        direction TB
-        STG_S[("staging")]
-        PIPE_S[("pipeline")]
-        LAB_S[("labels")]
-        API_S[("api")]
-        MON_S[("monitoring")]
-    end
-
-    subgraph MLOPS["MLOps"]
-        direction TB
-        EXPERIMENT["Staging Experiment Pipeline"]
-        MLFLOW["MLflow"]
-        CICD["CI/CD"]
-        MONITOR["Performance Monitoring"]
-    end
-
-    subgraph SERVING["Serving"]
-        direction TB
-        REDIS["Redis Cache"]
-        FAPI["FastAPI"]
-    end
-
-    ALERT(["Alerting"])
-    CLIENT(("Client"))
-
-    FIRMS_NRT --> ETL
-    FIRMS_ARC --> ETL
-    ETL --> STG_S
-    STG_S --> PROC
-    WFIGS_SRC -.-> PROC
-    ICS_SRC --> PROC
-    HRRR_SRC -.-> PROC
-    PROC --> PIPE_S
-    PROC --> LAB_S
-
-    PIPE_S --> MODEL
-    LAB_S --> MODEL
-    EDA --> MANUAL
-    MANUAL -->|log experiment| EXPERIMENT
-    EXPERIMENT -->|approved| CICD
-    CICD -->|deploy| PIPELINE
-    CICD -->|deploy| SERVING
-    CICD -->|trigger run| MODEL
-    MODEL -->|log| MLFLOW
-    MLFLOW -->|load Production model| MODEL
-
-    MODEL --> API_S
-    PIPE_S --> API_S
-    API_S --> REDIS
-    REDIS --> FAPI
-    FAPI --> CLIENT
-
-    FAPI -->|prediction logs| MON_S
-    MON_S --> MONITOR
-    WFIGS_SRC -.->|outcome join| MONITOR
-    MONITOR -.->|threshold alert| ALERT
-    ALERT -.->|retrain| EXPERIMENT
-    SCHED(["Scheduled Retrain"]) -.-> MODEL
-```
-
----
 
 ## Data Engineering Pipeline Stages
 
@@ -104,87 +30,68 @@ flowchart TD
     end
 
     subgraph S1A["Stage 1a ETL / Validation"]
-        PYD["Validate & Clean"]
-        RAWT[("staging.hotspots_raw")]
+        PYD["Validate & Clean"] --> RAWT[("staging.hotspots_raw")]
     end
 
-    subgraph S1B_BOX["Stage 1b Preprocessing"]
-        PREP["Filter & Deduplicate"]
-        HOTS[("pipeline.hotspots")]
+    subgraph S1B["Stage 1b Preprocessing"]
+        PREP["Filter & Deduplicate"] --> HOTS[("pipeline.hotspots")]
     end
 
-    subgraph S2_BOX["Stage 2 Spatial Partitioning"]
+    subgraph S2["Stage 2 Spatial Partitioning"]
         PART["Tile Assignment"]
     end
 
-    subgraph S3_BOX["Stage 3 Clustering"]
-        CLUST_ALGO["ST-DBSCAN"]
-        CLUSTT[("pipeline.clusters")]
+    subgraph S3["Stage 3 Clustering"]
+        CLUST_ALGO["ST-DBSCAN"] --> CLUSTT[("pipeline.clusters")]
     end
 
-    subgraph S4_BOX["Stage 4 Cluster Aggregation"]
-        AGG["Daily Snapshots"]
-        SNAPT[("pipeline.daily_cluster_snapshots")]
+    subgraph S4["Stage 4 Cluster Aggregation"]
+        AGG["Daily Snapshots"] --> SNAPT[("pipeline.daily_cluster_snapshots")]
     end
 
-    WFIGS_IN["WFIGS API"]
-    HRRR_IN["HRRR Weather"]
+    WFIGS["WFIGS API"]
+    HRRR["HRRR Weather"]
 
-    subgraph S4B_BOX["Stage 4b Weather Enrichment"]
-        WEATHER_ALGO["Centroid Weather Fetch"]
-        WEATHERT[("pipeline.cluster_weather")]
+    subgraph S4B["Stage 4b Weather Enrichment"]
+        WEATHER_ALGO["Centroid Weather Fetch"] --> WEATHERT[("pipeline.cluster_weather")]
     end
 
-    subgraph S5_BOX["Stage 5 Feature Engineering"]
-        FEAT_ALGO["Feature Computation"]
-        FEATT[("pipeline.cluster_features")]
+    subgraph S5["Stage 5 Feature Engineering"]
+        FEAT_ALGO["Feature Computation"] --> FEATT[("pipeline.cluster_features")]
     end
 
-    ICS_SRC["ICS-209-PLUS"]
+    ICS["ICS-209-PLUS"]
 
-    subgraph S6_BOX["Stage 6 Labeling"]
-        ICS_TABLE[("labels.ics209_incidents")]
-        LABEL_ALGO["Match to Nearest Origin"]
-        LABT[("labels.labeled_clusters")]
+    subgraph S6["Stage 6 Labeling"]
+        ICS_TABLE[("labels.ics209_incidents")] --> LABEL_ALGO["Match to Nearest Origin"] --> LABT[("labels.labeled_clusters")]
     end
 
-    subgraph S7_BOX["Stage 7 Feature Matrix Assembly"]
-        ASSEM["Train / Test Split"]
-        MATRIX[/"X_train / y_train / X_test"/]
+    subgraph S7["Stage 7 Feature Matrix Assembly"]
+        ASSEM["Train / Test Split"] --> MATRIX[/"X_train / y_train / X_test / y_test"/]
     end
 
-    subgraph PH4["Risk Model"]
-        XGB["XGBoost"]
-        RSCORES[("pipeline.risk_scores")]
+    subgraph RM["Risk Model"]
+        XGB["XGBoost"] --> RSCORES[("pipeline.risk_scores")]
     end
 
-    FIRMS_IN   --> PYD
-    PYD        --> RAWT
-    RAWT       --> PREP
-    PREP       --> HOTS
-    HOTS       --> PART
-    PART       --> CLUST_ALGO
-    CLUST_ALGO --> CLUSTT
-    CLUSTT     --> AGG
-    AGG        --> SNAPT
-    SNAPT      --> WEATHER_ALGO
-    HRRR_IN    -.-> WEATHER_ALGO
-    WEATHER_ALGO --> WEATHERT
-    WEATHERT   --> FEAT_ALGO
-    SNAPT      --> FEAT_ALGO
-    WFIGS_IN   -.-> FEAT_ALGO
-    FEAT_ALGO  --> FEATT
-    ICS_SRC    --> ICS_TABLE
-    FEATT      --> LABEL_ALGO
-    ICS_TABLE  --> LABEL_ALGO
-    LABEL_ALGO --> LABT
-    LABT       --> ASSEM
-    ASSEM      --> MATRIX
-    MATRIX     --> XGB
-    XGB        --> RSCORES
+    INGEST --> S1A
+    S1A --> S1B
+    S1B --> S2
+    S2 --> S3
+    S3 --> S4
+    S4 --> S5
+    S4 --> S4B
+    HRRR --> S4B
+    S4B --> S5
+    WFIGS --> S5
+    S5 --> S6
+    ICS --> S6
+    S6 --> S7
+    S7 --> RM
+
+
 ```
 
----
 
 ## Serving Layer
 
@@ -234,7 +141,6 @@ flowchart LR
     R3 --> CLIENT
 ```
 
----
 
 ## Design Decisions
 
@@ -278,17 +184,9 @@ Retraining will have three triggers:
 - a performance-based retrain triggered from the fall in realized precision
 - a human-initiated retrain available at any for cases like new data or catching something the automated missed
 
----
 
-## One Small Favour
 
-I've been thinking about the labeling strategy and it is the weakest link in the whole plan. I kind of already knew this going in but just wanted to get started with something. ICS-209 coverage stops at 2020, which means there's no ground truth for anything after that (which I had planned for 2023 to be a held out test year), and more importantly no way to do the retroactive outcome labeling I had planned for MLOps once the service is actually live. The whole realized precision loop depends on getting updated truth values over time, and this dataset is a frozen research compilation that does not get updated frequently.
 
-I looked into WFIGS as a replacement since it's more than just perimeters: there's a live layer (refreshed about every 5 min, has discovery date + point of origin) that I've only been thinking of using for perimeters. This would fix the currency problem, but not the actual problem of "got assigned an incident number", which is still a human threshold just a lower one than ICS-209's reporting benchmark. So this is not good either.
-
-So I'm leaning toward dropping the whole binary "became a reportable incident" target and reframing the label as something derived purely from the FIRMS detection history itself (e.g. predicting escalation magnitude based on detection count, total FRP, cluster area at T+24h, T+48h, etc..) instead of a declared incident flag. This would be a self-supervised method based on the FIRMS data, which doesn't have an end date (and has a large and easily accessible history), sidesteps the whole class imbalance problem since it's a continuous target instead of a ~1-5% positive rate, and quashes the ICS-209/WFIGS dependency instead of just swapping in a better matched labeing dataset. ICS-209/WFIGS would probably still be useful as enrichment features, just not as the label source. Still just brainstorming, haven't revisited the train/test split or any of the modeling logic yet.
-
----
 
 
 ## Some more things to think about but not sure right now
